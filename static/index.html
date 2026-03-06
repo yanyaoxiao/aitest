@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>多交易所辅助工具</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" />
+  <style>
+    body { background: #0d1117; }
+    .navbar { border-bottom: 1px solid #30363d; }
+    .nav-tabs .nav-link { color: #8b949e; border: none; padding: .5rem 1rem; }
+    .nav-tabs .nav-link.active { color: #f0f6fc; background: transparent; border-bottom: 2px solid #58a6ff; }
+    .nav-tabs { border-bottom: 1px solid #30363d; }
+    .card { background: #161b22; border: 1px solid #30363d; }
+    .form-control, .form-select { background: #0d1117; border-color: #30363d; color: #f0f6fc; }
+    .form-control:focus, .form-select:focus { background: #0d1117; border-color: #58a6ff; color: #f0f6fc; box-shadow: 0 0 0 .2rem rgba(88,166,255,.15); }
+    .form-control::placeholder { color: #6e7681; }
+    .input-group-text { background: #161b22; border-color: #30363d; color: #8b949e; }
+    .table { --bs-table-bg: transparent; --bs-table-color: #e6edf3; }
+    .table th { color: #8b949e; font-weight: 500; font-size: .8rem; text-transform: uppercase; letter-spacing: .05em; border-color: #30363d; }
+    .table td { border-color: #21262d; vertical-align: middle; }
+    .log-box { background: #010409; color: #3fb950; font-family: 'SFMono-Regular', Consolas, monospace; font-size: 11px; max-height: 160px; overflow-y: auto; border-radius: 6px; padding: .6rem .8rem; white-space: pre-wrap; word-break: break-all; }
+    .badge-status-pending  { background: #6e7681 !important; }
+    .badge-status-running  { background: #1f6feb !important; }
+    .badge-status-done     { background: #238636 !important; }
+    .badge-status-error    { background: #da3633 !important; }
+    .btn-buy  { background: #238636; border-color: #238636; color: #fff; }
+    .btn-buy:hover  { background: #2ea043; border-color: #2ea043; color: #fff; }
+    .btn-sell { background: #da3633; border-color: #da3633; color: #fff; }
+    .btn-sell:hover { background: #f85149; border-color: #f85149; color: #fff; }
+    .ratio-value { font-size: 1.1rem; font-weight: 600; color: #58a6ff; }
+    .expected-box { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: .75rem 1rem; }
+    .section-label { font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; color: #8b949e; margin-bottom: .5rem; }
+    .task-card { border-left: 3px solid #30363d; }
+    .task-card.status-running { border-left-color: #1f6feb; }
+    .task-card.status-done    { border-left-color: #238636; }
+    .task-card.status-error   { border-left-color: #da3633; }
+    .empty-state { color: #6e7681; text-align: center; padding: 2rem; }
+    .coin-badge { font-size: .7rem; background: #21262d; color: #8b949e; border-radius: 4px; padding: 1px 6px; }
+  </style>
+</head>
+<body>
+
+<!-- ═══ Navbar ═══════════════════════════════════════════════════════════════ -->
+<nav class="navbar px-3 py-2">
+  <span class="navbar-brand mb-0 fw-bold fs-6">
+    <i class="bi bi-currency-bitcoin text-warning"></i> 多交易所辅助工具
+  </span>
+  <div class="d-flex align-items-center gap-2 ms-auto">
+    <select id="exchangeSelect" class="form-select form-select-sm" style="width:130px" onchange="onExchangeChange(this.value)">
+      <option value="">选择交易所</option>
+    </select>
+    <button class="btn btn-sm btn-outline-secondary" onclick="openConfigModal()">
+      <i class="bi bi-gear"></i>
+    </button>
+    <button class="btn btn-sm btn-outline-primary" onclick="refreshBalances()">
+      <i class="bi bi-arrow-clockwise"></i> 刷新
+    </button>
+  </div>
+</nav>
+
+<!-- ═══ Main ══════════════════════════════════════════════════════════════════ -->
+<div class="container-fluid px-3 pt-3" style="max-width:1000px">
+
+  <!-- Tabs -->
+  <ul class="nav nav-tabs mb-3" id="mainTabs" role="tablist">
+    <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tabDash"   onclick="onTabClick('dash')">  <i class="bi bi-grid-1x2"></i>  仪表盘</button></li>
+    <li class="nav-item"><button class="nav-link"        data-bs-toggle="tab" data-bs-target="#tabOrder"  onclick="onTabClick('order')"> <i class="bi bi-cart"></i>       下单</button></li>
+    <li class="nav-item"><button class="nav-link"        data-bs-toggle="tab" data-bs-target="#tabWith"   onclick="onTabClick('with')">  <i class="bi bi-send"></i>       提币</button></li>
+    <li class="nav-item"><button class="nav-link"        data-bs-toggle="tab" data-bs-target="#tabBorrow" onclick="onTabClick('borrow')"><i class="bi bi-bank"></i>       借币</button></li>
+    <li class="nav-item"><button class="nav-link"        data-bs-toggle="tab" data-bs-target="#tabLoop"   onclick="onTabClick('loop')">  <i class="bi bi-arrow-repeat"></i> 循环借币</button></li>
+  </ul>
+
+  <div class="tab-content">
+
+    <!-- ── 仪表盘 ────────────────────────────────────────────────────────── -->
+    <div class="tab-pane fade show active" id="tabDash">
+      <div class="d-flex align-items-center gap-2 mb-3">
+        <div class="section-label mb-0">账户类型</div>
+        <select id="accountType" class="form-select form-select-sm" style="width:130px" onchange="refreshBalances()">
+          <option value="spot">现货 Spot</option>
+          <option value="margin">杠杆 Margin</option>
+        </select>
+      </div>
+      <div class="card">
+        <div class="card-body p-0">
+          <table class="table table-hover mb-0">
+            <thead>
+              <tr>
+                <th class="ps-3">币种</th>
+                <th class="text-end pe-3">余额</th>
+              </tr>
+            </thead>
+            <tbody id="balanceBody">
+              <tr><td colspan="2" class="empty-state">请选择交易所并刷新余额</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── 下单 ──────────────────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="tabOrder">
+      <div class="row g-3">
+        <div class="col-lg-5">
+          <div class="card h-100">
+            <div class="card-body">
+              <div class="section-label">下单</div>
+
+              <div class="mb-3">
+                <label class="form-label small">交易对</label>
+                <input id="oSymbol" type="text" class="form-control" placeholder="BTC/USDT" />
+              </div>
+
+              <div class="mb-3">
+                <label class="form-label small">订单类型</label>
+                <div class="btn-group w-100" role="group">
+                  <input type="radio" class="btn-check" name="oType" id="oMarket" value="market" checked />
+                  <label class="btn btn-outline-secondary" for="oMarket">市价 Market</label>
+                  <input type="radio" class="btn-check" name="oType" id="oLimit"  value="limit" />
+                  <label class="btn btn-outline-secondary" for="oLimit">限价 Limit</label>
+                </div>
+              </div>
+
+              <div class="mb-3" id="oPriceGroup" style="display:none">
+                <label class="form-label small">价格</label>
+                <input id="oPrice" type="number" class="form-control" placeholder="0.00" step="any" min="0" />
+              </div>
+
+              <div class="mb-4">
+                <label class="form-label small">数量</label>
+                <input id="oAmount" type="number" class="form-control" placeholder="0.00" step="any" min="0" />
+              </div>
+
+              <div class="d-grid gap-2">
+                <button class="btn btn-buy" onclick="submitOrder('buy')">
+                  <i class="bi bi-arrow-up-circle"></i> 买入 Buy
+                </button>
+                <button class="btn btn-sell" onclick="submitOrder('sell')">
+                  <i class="bi bi-arrow-down-circle"></i> 卖出 Sell
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-lg-7">
+          <div class="card h-100">
+            <div class="card-body">
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <div class="section-label mb-0">当前挂单</div>
+                <button class="btn btn-sm btn-outline-secondary" onclick="loadOrders()">
+                  <i class="bi bi-arrow-clockwise"></i>
+                </button>
+              </div>
+              <div class="table-responsive">
+                <table class="table table-sm mb-0">
+                  <thead>
+                    <tr>
+                      <th>订单ID</th><th>交易对</th><th>方向</th><th>类型</th>
+                      <th>数量</th><th>价格</th><th>状态</th><th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="ordersBody">
+                    <tr><td colspan="8" class="empty-state">暂无挂单</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── 提币 ──────────────────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="tabWith">
+      <div class="row justify-content-center">
+        <div class="col-lg-5">
+          <div class="card">
+            <div class="card-body">
+              <div class="section-label">提币</div>
+
+              <div class="mb-3">
+                <label class="form-label small">币种</label>
+                <input id="wCoin" type="text" class="form-control" placeholder="USDT" />
+              </div>
+
+              <div class="mb-3">
+                <label class="form-label small">数量</label>
+                <input id="wAmount" type="number" class="form-control" placeholder="0.00" step="any" min="0" />
+              </div>
+
+              <div class="mb-3">
+                <label class="form-label small">提币地址</label>
+                <textarea id="wAddress" class="form-control" rows="2" placeholder="0x..."></textarea>
+              </div>
+
+              <div class="mb-3">
+                <label class="form-label small">网络 <span class="text-muted">(可选)</span></label>
+                <input id="wNetwork" type="text" class="form-control" placeholder="TRC20 / ERC20 / BEP20 …" />
+              </div>
+
+              <div class="mb-4">
+                <label class="form-label small">Tag / Memo <span class="text-muted">(可选，XRP/EOS等需要)</span></label>
+                <input id="wTag" type="text" class="form-control" placeholder="留空则不填" />
+              </div>
+
+              <div class="alert alert-warning py-2 small mb-3">
+                <i class="bi bi-exclamation-triangle-fill"></i>
+                提币操作不可撤销，请务必核对地址和网络！
+              </div>
+
+              <button class="btn btn-warning w-100" onclick="submitWithdraw()">
+                <i class="bi bi-send-fill"></i> 确认提币
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── 借币 ──────────────────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="tabBorrow">
+      <div class="row justify-content-center">
+        <div class="col-lg-5">
+          <div class="card">
+            <div class="card-body">
+              <div class="section-label">借币 / 还款</div>
+
+              <div class="mb-3">
+                <label class="form-label small">保证金模式</label>
+                <div class="btn-group w-100" role="group">
+                  <input type="radio" class="btn-check" name="bMode" id="bCross"    value="cross"    checked onchange="toggleSymbolField()" />
+                  <label class="btn btn-outline-secondary" for="bCross">全仓 Cross</label>
+                  <input type="radio" class="btn-check" name="bMode" id="bIsolated" value="isolated"        onchange="toggleSymbolField()" />
+                  <label class="btn btn-outline-secondary" for="bIsolated">逐仓 Isolated</label>
+                </div>
+              </div>
+
+              <div class="mb-3" id="bSymbolGroup" style="display:none">
+                <label class="form-label small">交易对 <span class="text-muted">(逐仓必填)</span></label>
+                <input id="bSymbol" type="text" class="form-control" placeholder="BTC/USDT" />
+              </div>
+
+              <div class="mb-3">
+                <label class="form-label small">币种</label>
+                <input id="bCoin" type="text" class="form-control" placeholder="USDT" />
+              </div>
+
+              <div class="mb-4">
+                <label class="form-label small">数量</label>
+                <input id="bAmount" type="number" class="form-control" placeholder="0.00" step="any" min="0" />
+              </div>
+
+              <div class="d-grid gap-2">
+                <button class="btn btn-primary" onclick="submitBorrow()">
+                  <i class="bi bi-plus-circle"></i> 借入
+                </button>
+                <button class="btn btn-outline-secondary" onclick="submitRepay()">
+                  <i class="bi bi-dash-circle"></i> 还款
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── 循环借币 ────────────────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="tabLoop">
+      <div class="row g-3">
+
+        <!-- Config form -->
+        <div class="col-lg-5">
+          <div class="card">
+            <div class="card-body">
+              <div class="section-label">循环借币配置</div>
+
+              <div class="mb-3">
+                <label class="form-label small">抵押币种</label>
+                <input id="lCollateral" type="text" class="form-control" placeholder="USDT" oninput="calcExpected()" />
+              </div>
+
+              <div class="mb-3">
+                <label class="form-label small">借入币种</label>
+                <input id="lBorrowCoin" type="text" class="form-control" placeholder="USDT" />
+              </div>
+
+              <div class="mb-3">
+                <label class="form-label small">初始本金</label>
+                <input id="lInitial" type="number" class="form-control" placeholder="1000" step="any" min="0" oninput="calcExpected()" />
+              </div>
+
+              <div class="mb-3">
+                <label class="form-label small d-flex justify-content-between">
+                  <span>每轮借入比例</span>
+                  <span class="ratio-value" id="lRatioDisplay">0.80</span>
+                </label>
+                <input id="lRatioRange" type="range" class="form-range" min="0.1" max="0.95" step="0.01" value="0.8" oninput="syncRatio(this.value)" />
+                <input id="lRatio" type="number" class="form-control form-control-sm mt-1" value="0.80" step="0.01" min="0.1" max="0.95" oninput="syncRatioInput(this.value)" />
+              </div>
+
+              <div class="mb-3">
+                <label class="form-label small">循环次数</label>
+                <input id="lLoops" type="number" class="form-control" value="5" min="1" max="20" oninput="calcExpected()" />
+              </div>
+
+              <div class="mb-3">
+                <label class="form-label small">保证金模式</label>
+                <select id="lMode" class="form-select" onchange="toggleLoopSymbol()">
+                  <option value="cross">全仓 Cross</option>
+                  <option value="isolated">逐仓 Isolated</option>
+                </select>
+              </div>
+
+              <div class="mb-3" id="lSymbolGroup" style="display:none">
+                <label class="form-label small">交易对</label>
+                <input id="lSymbol" type="text" class="form-control" placeholder="BTC/USDT" />
+              </div>
+
+              <!-- Expected total -->
+              <div class="expected-box mb-4">
+                <div class="text-muted small mb-1">预计累计借入</div>
+                <div class="fs-5 fw-semibold">
+                  <span id="lExpected">—</span>
+                  <span class="coin-badge ms-1" id="lExpectedCoin">—</span>
+                </div>
+                <div class="text-muted" style="font-size:.7rem;margin-top:.3rem">
+                  公式：本金 × 比例 × (1 − 比例^次数) / (1 − 比例)
+                </div>
+              </div>
+
+              <button class="btn btn-primary w-100" onclick="startLoop()">
+                <i class="bi bi-play-circle-fill"></i> 开始循环借币
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tasks list -->
+        <div class="col-lg-7">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <div class="section-label mb-0">任务列表</div>
+            <button class="btn btn-sm btn-outline-secondary" onclick="loadTasks()">
+              <i class="bi bi-arrow-clockwise"></i>
+            </button>
+          </div>
+          <div id="tasksList">
+            <div class="empty-state">暂无任务</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+  </div><!-- /tab-content -->
+</div><!-- /container -->
+
+
+<!-- ═══ Exchange Config Modal ════════════════════════════════════════════════ -->
+<div class="modal fade" id="configModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content" style="background:#161b22;border-color:#30363d">
+      <div class="modal-header" style="border-color:#30363d">
+        <h5 class="modal-title fs-6"><i class="bi bi-gear"></i> 交易所配置</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+
+        <!-- Configured list -->
+        <div class="section-label">已配置</div>
+        <div id="configuredList" class="mb-3">
+          <div class="text-muted small">加载中…</div>
+        </div>
+
+        <hr style="border-color:#30363d" />
+
+        <!-- Add new -->
+        <div class="section-label">添加 / 更新</div>
+
+        <div class="mb-2">
+          <select id="newExchangeSel" class="form-select form-select-sm">
+            <option value="binance">Binance</option>
+            <option value="okx">OKX</option>
+            <option value="bybit">Bybit</option>
+            <option value="gate">Gate.io</option>
+            <option value="kucoin">KuCoin</option>
+          </select>
+        </div>
+        <div class="mb-2">
+          <input id="cfgApiKey" type="text" class="form-control form-control-sm" placeholder="API Key" />
+        </div>
+        <div class="mb-2">
+          <input id="cfgSecret" type="password" class="form-control form-control-sm" placeholder="Secret" />
+        </div>
+        <div class="mb-3">
+          <input id="cfgPassword" type="password" class="form-control form-control-sm" placeholder="Passphrase（OKX / KuCoin 需要）" />
+        </div>
+        <button class="btn btn-primary btn-sm w-100" onclick="saveExchange()">
+          <i class="bi bi-save"></i> 保存
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══ Toast container ═══════════════════════════════════════════════════════ -->
+<div class="toast-container position-fixed bottom-0 end-0 p-3" id="toastArea"></div>
+
+
+<!-- ═══ Scripts ══════════════════════════════════════════════════════════════ -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+// ─── State ────────────────────────────────────────────────────────────────────
+const S = {
+  exchange: localStorage.getItem('exchange') || '',
+};
+
+// ─── API helper ───────────────────────────────────────────────────────────────
+async function api(method, path, body) {
+  try {
+    const opts = { method, headers: {} };
+    if (body !== undefined) {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(body);
+    }
+    const res = await fetch(path, opts);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || res.statusText);
+    return data;
+  } catch (e) {
+    toast(e.message, 'danger');
+    throw e;
+  }
+}
+
+// ─── Toast ────────────────────────────────────────────────────────────────────
+function toast(msg, type = 'info') {
+  const colors = { success: 'success', danger: 'danger', warning: 'warning', info: 'info' };
+  const color = colors[type] || 'secondary';
+  const el = document.createElement('div');
+  el.className = `toast align-items-center text-bg-${color} border-0 show`;
+  el.setAttribute('role', 'alert');
+  el.innerHTML = `
+    <div class="d-flex">
+      <div class="toast-body" style="font-size:.85rem">${escHtml(msg)}</div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+    </div>`;
+  document.getElementById('toastArea').appendChild(el);
+  setTimeout(() => el.remove(), 6000);
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ─── Exchange management ──────────────────────────────────────────────────────
+async function loadExchanges() {
+  const data = await api('GET', '/api/exchanges');
+
+  // Navbar select
+  const sel = document.getElementById('exchangeSelect');
+  sel.innerHTML = '<option value="">选择交易所</option>';
+  data.configured.forEach(id => {
+    const o = document.createElement('option');
+    o.value = id; o.textContent = id.toUpperCase();
+    if (id === S.exchange) o.selected = true;
+    sel.appendChild(o);
+  });
+
+  // Config modal list
+  const list = document.getElementById('configuredList');
+  if (!data.configured.length) {
+    list.innerHTML = '<div class="text-muted small">暂无已配置的交易所</div>';
+  } else {
+    list.innerHTML = data.configured.map(id => `
+      <div class="d-flex align-items-center justify-content-between mb-1">
+        <span class="badge bg-secondary">${id.toUpperCase()}</span>
+        <button class="btn btn-xs btn-outline-danger" style="font-size:.7rem;padding:1px 8px"
+                onclick="removeExchange('${id}')">
+          <i class="bi bi-trash"></i> 删除
+        </button>
+      </div>`).join('');
+  }
+}
+
+function onExchangeChange(id) {
+  S.exchange = id;
+  localStorage.setItem('exchange', id);
+  if (id) refreshBalances();
+}
+
+function openConfigModal() {
+  loadExchanges();
+  new bootstrap.Modal(document.getElementById('configModal')).show();
+}
+
+async function saveExchange() {
+  const eid      = document.getElementById('newExchangeSel').value;
+  const api_key  = document.getElementById('cfgApiKey').value.trim();
+  const secret   = document.getElementById('cfgSecret').value.trim();
+  const password = document.getElementById('cfgPassword').value.trim();
+  if (!api_key || !secret) { toast('请填写 API Key 和 Secret', 'warning'); return; }
+  await api('POST', `/api/exchanges/${eid}`, { api_key, secret, password });
+  toast(`${eid.toUpperCase()} 配置已保存`, 'success');
+  loadExchanges();
+}
+
+async function removeExchange(id) {
+  if (!confirm(`确认删除 ${id.toUpperCase()} 的 API 配置？`)) return;
+  await api('DELETE', `/api/exchanges/${id}`);
+  toast(`已删除 ${id.toUpperCase()} 配置`, 'info');
+  if (S.exchange === id) { S.exchange = ''; localStorage.removeItem('exchange'); }
+  loadExchanges();
+}
+
+// ─── Balances ─────────────────────────────────────────────────────────────────
+async function refreshBalances() {
+  if (!S.exchange) { toast('请先选择交易所', 'warning'); return; }
+  const type = document.getElementById('accountType').value;
+  const data  = await api('GET', `/api/balances/${S.exchange}?type=${type}`);
+  const tbody = document.getElementById('balanceBody');
+  const entries = Object.entries(data.balances || {}).sort((a, b) => b[1] - a[1]);
+  if (!entries.length) {
+    tbody.innerHTML = '<tr><td colspan="2" class="empty-state">账户余额为零</td></tr>';
+    return;
+  }
+  tbody.innerHTML = entries.map(([coin, amt]) => `
+    <tr>
+      <td class="ps-3 fw-semibold">${escHtml(coin)}</td>
+      <td class="text-end pe-3 font-monospace text-success">${Number(amt).toFixed(8)}</td>
+    </tr>`).join('');
+}
+
+// ─── Orders ───────────────────────────────────────────────────────────────────
+function onTabClick(tab) {
+  if (tab === 'order') loadOrders();
+  if (tab === 'loop')  { loadTasks(); startPoll(); }
+}
+
+document.querySelectorAll('input[name="oType"]').forEach(r =>
+  r.addEventListener('change', () => {
+    document.getElementById('oPriceGroup').style.display =
+      r.value === 'limit' && r.checked ? '' : 'none';
+  })
+);
+
+async function submitOrder(side) {
+  if (!S.exchange) { toast('请先选择交易所', 'warning'); return; }
+  const symbol = document.getElementById('oSymbol').value.trim();
+  const type   = document.querySelector('input[name="oType"]:checked').value;
+  const amount = parseFloat(document.getElementById('oAmount').value);
+  const price  = type === 'limit' ? parseFloat(document.getElementById('oPrice').value) : null;
+
+  if (!symbol || !amount) { toast('请填写交易对和数量', 'warning'); return; }
+  if (type === 'limit' && !price) { toast('限价单需要填写价格', 'warning'); return; }
+
+  const label = side === 'buy' ? '买入' : '卖出';
+  const priceStr = type === 'limit' ? ` @ ${price}` : '（市价）';
+  if (!confirm(`确认${label} ${amount} ${symbol}${priceStr}？\n交易所：${S.exchange.toUpperCase()}`)) return;
+
+  const res = await api('POST', '/api/orders', { exchange: S.exchange, symbol, type, side, amount, price });
+  toast(`${label}订单提交成功 · ID: ${res.order?.id?.slice(0,12) || 'OK'}`, 'success');
+  loadOrders();
+}
+
+async function loadOrders() {
+  if (!S.exchange) return;
+  const symbol = document.getElementById('oSymbol').value.trim();
+  const url = symbol
+    ? `/api/orders/${S.exchange}?symbol=${encodeURIComponent(symbol)}`
+    : `/api/orders/${S.exchange}`;
+  const data  = await api('GET', url);
+  const tbody = document.getElementById('ordersBody');
+  if (!data.orders.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty-state">暂无挂单</td></tr>';
+    return;
+  }
+  tbody.innerHTML = data.orders.map(o => `
+    <tr>
+      <td class="font-monospace small">${o.id.slice(0,10)}…</td>
+      <td>${escHtml(o.symbol)}</td>
+      <td class="${o.side === 'buy' ? 'text-success' : 'text-danger'} fw-semibold">${o.side === 'buy' ? '买' : '卖'}</td>
+      <td>${o.type}</td>
+      <td class="font-monospace">${o.amount}</td>
+      <td class="font-monospace">${o.price ?? '—'}</td>
+      <td><span class="badge bg-secondary" style="font-size:.65rem">${o.status}</span></td>
+      <td><button class="btn btn-outline-danger" style="font-size:.7rem;padding:1px 8px"
+            onclick="cancelOrder('${o.id}','${o.symbol}')">撤</button></td>
+    </tr>`).join('');
+}
+
+async function cancelOrder(id, symbol) {
+  if (!confirm(`确认撤销订单 ${id.slice(0,12)}？`)) return;
+  await api('DELETE', `/api/orders/${S.exchange}/${encodeURIComponent(id)}?symbol=${encodeURIComponent(symbol)}`);
+  toast('撤单成功', 'success');
+  loadOrders();
+}
+
+// ─── Withdraw ─────────────────────────────────────────────────────────────────
+async function submitWithdraw() {
+  if (!S.exchange) { toast('请先选择交易所', 'warning'); return; }
+  const coin    = document.getElementById('wCoin').value.trim().toUpperCase();
+  const amount  = parseFloat(document.getElementById('wAmount').value);
+  const address = document.getElementById('wAddress').value.trim();
+  const network = document.getElementById('wNetwork').value.trim() || null;
+  const tag     = document.getElementById('wTag').value.trim() || null;
+
+  if (!coin || !amount || !address) { toast('请填写币种、数量和地址', 'warning'); return; }
+
+  if (!confirm(`⚠️ 请仔细核对以下提币信息：\n\n币种：${coin}\n数量：${amount}\n网络：${network || '默认'}\n地址：${address}\n\n提币后不可撤销！`)) return;
+
+  const res = await api('POST', '/api/withdraw', { exchange: S.exchange, coin, amount, address, tag, network });
+  toast(`提币申请已提交 · ID: ${res.result?.id || 'OK'}`, 'success');
+}
+
+// ─── Borrow / Repay ───────────────────────────────────────────────────────────
+function toggleSymbolField() {
+  const mode = document.querySelector('input[name="bMode"]:checked').value;
+  document.getElementById('bSymbolGroup').style.display = mode === 'isolated' ? '' : 'none';
+}
+
+async function submitBorrow() {
+  if (!S.exchange) { toast('请先选择交易所', 'warning'); return; }
+  const coin   = document.getElementById('bCoin').value.trim().toUpperCase();
+  const amount = parseFloat(document.getElementById('bAmount').value);
+  const mode   = document.querySelector('input[name="bMode"]:checked').value;
+  const symbol = document.getElementById('bSymbol').value.trim() || null;
+  if (!coin || !amount) { toast('请填写币种和数量', 'warning'); return; }
+  if (mode === 'isolated' && !symbol) { toast('逐仓模式需要填写交易对', 'warning'); return; }
+  if (!confirm(`确认借入 ${amount} ${coin}？\n模式：${mode === 'cross' ? '全仓' : '逐仓'}`)) return;
+  await api('POST', '/api/borrow', { exchange: S.exchange, coin, amount, mode, symbol });
+  toast(`已借入 ${amount} ${coin}`, 'success');
+}
+
+async function submitRepay() {
+  if (!S.exchange) { toast('请先选择交易所', 'warning'); return; }
+  const coin   = document.getElementById('bCoin').value.trim().toUpperCase();
+  const amount = parseFloat(document.getElementById('bAmount').value);
+  const mode   = document.querySelector('input[name="bMode"]:checked').value;
+  const symbol = document.getElementById('bSymbol').value.trim() || null;
+  if (!coin || !amount) { toast('请填写币种和数量', 'warning'); return; }
+  if (!confirm(`确认还款 ${amount} ${coin}？`)) return;
+  await api('POST', '/api/repay', { exchange: S.exchange, coin, amount, mode, symbol });
+  toast(`已还款 ${amount} ${coin}`, 'success');
+}
+
+// ─── Loop borrow ──────────────────────────────────────────────────────────────
+function syncRatio(v) {
+  document.getElementById('lRatio').value = v;
+  document.getElementById('lRatioDisplay').textContent = parseFloat(v).toFixed(2);
+  calcExpected();
+}
+function syncRatioInput(v) {
+  document.getElementById('lRatioRange').value = v;
+  document.getElementById('lRatioDisplay').textContent = parseFloat(v).toFixed(2);
+  calcExpected();
+}
+function toggleLoopSymbol() {
+  document.getElementById('lSymbolGroup').style.display =
+    document.getElementById('lMode').value === 'isolated' ? '' : 'none';
+}
+function calcExpected() {
+  const initial = parseFloat(document.getElementById('lInitial').value) || 0;
+  const ratio   = parseFloat(document.getElementById('lRatio').value) || 0;
+  const loops   = parseInt(document.getElementById('lLoops').value) || 0;
+  const coin    = document.getElementById('lBorrowCoin').value.trim().toUpperCase() || '—';
+  document.getElementById('lExpectedCoin').textContent = coin;
+  if (!initial || ratio <= 0 || ratio >= 1 || loops <= 0) {
+    document.getElementById('lExpected').textContent = '—';
+    return;
+  }
+  const total = initial * ratio * (1 - Math.pow(ratio, loops)) / (1 - ratio);
+  document.getElementById('lExpected').textContent = total.toFixed(4);
+}
+
+async function startLoop() {
+  if (!S.exchange) { toast('请先选择交易所', 'warning'); return; }
+  const collateral  = document.getElementById('lCollateral').value.trim().toUpperCase();
+  const borrow_coin = document.getElementById('lBorrowCoin').value.trim().toUpperCase();
+  const initial     = parseFloat(document.getElementById('lInitial').value);
+  const ratio       = parseFloat(document.getElementById('lRatio').value);
+  const loops       = parseInt(document.getElementById('lLoops').value);
+  const mode        = document.getElementById('lMode').value;
+  const symbol      = document.getElementById('lSymbol').value.trim() || null;
+
+  if (!collateral || !borrow_coin || !initial || !ratio || !loops) {
+    toast('请填写所有必填项', 'warning'); return;
+  }
+  const total = initial * ratio * (1 - Math.pow(ratio, loops)) / (1 - ratio);
+  if (!confirm(
+    `确认开始循环借币？\n\n` +
+    `交易所：${S.exchange.toUpperCase()}\n` +
+    `抵押：${collateral} · 借入：${borrow_coin}\n` +
+    `初始：${initial} · 比例：${ratio} · 次数：${loops}\n` +
+    `预计累计借入：${total.toFixed(4)} ${borrow_coin}`
+  )) return;
+
+  const res = await api('POST', '/api/loop-borrow/start', {
+    exchange: S.exchange, collateral, borrow_coin, initial, ratio, loops, mode, symbol
+  });
+  toast(`循环借币任务已创建 · ID: ${res.task_id}`, 'success');
+  loadTasks();
+  startPoll();
+}
+
+async function loadTasks() {
+  const data = await api('GET', '/api/loop-borrow/tasks');
+  const el = document.getElementById('tasksList');
+  const tasks = (data.tasks || []).slice().reverse();
+  if (!tasks.length) {
+    el.innerHTML = '<div class="empty-state">暂无任务</div>';
+    return;
+  }
+  el.innerHTML = tasks.map(t => {
+    const req = t.request || {};
+    const log = (t.log || []).join('\n');
+    const statusMap = { pending:'pending', running:'running', done:'done', error:'error' };
+    const sc = statusMap[t.status] || 'pending';
+    const statusLabel = { pending:'等待中', running:'运行中', done:'已完成', error:'错误' }[sc];
+    return `
+      <div class="card mb-2 task-card status-${sc}">
+        <div class="card-body py-2 px-3">
+          <div class="d-flex justify-content-between align-items-center mb-1">
+            <div class="d-flex align-items-center gap-2">
+              <span class="badge badge-status-${sc}">${statusLabel}</span>
+              <span class="fw-semibold small">${(req.exchange || '').toUpperCase()}</span>
+              <span class="coin-badge">${req.collateral || '?'} → ${req.borrow_coin || '?'}</span>
+              <span class="text-muted small">×${req.loops || '?'}轮</span>
+            </div>
+            <div class="d-flex gap-1">
+              ${t.status === 'running' ? `
+                <button class="btn btn-outline-warning" style="font-size:.7rem;padding:2px 10px"
+                        onclick="stopTask('${t.id}')"><i class="bi bi-stop-fill"></i> 停止</button>` : ''}
+            </div>
+          </div>
+          <div class="text-muted" style="font-size:.7rem">${(t.created || '').slice(0,19)} · ID: ${t.id}</div>
+          ${t.total != null ? `<div class="small mt-1">累计借入：<strong class="text-success">${t.total} ${req.borrow_coin}</strong></div>` : ''}
+          ${t.error ? `<div class="small text-danger mt-1"><i class="bi bi-exclamation-circle"></i> ${escHtml(t.error)}</div>` : ''}
+          <div class="log-box mt-2">${escHtml(log || '等待执行…')}</div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function stopTask(id) {
+  await api('POST', `/api/loop-borrow/tasks/${id}/stop`);
+  toast('已发送停止信号', 'info');
+}
+
+let _pollTimer = null;
+function startPoll() {
+  if (_pollTimer) return;
+  _pollTimer = setInterval(async () => {
+    const active = document.querySelector('.tab-pane.active')?.id;
+    if (active !== 'tabLoop') return;
+    await loadTasks();
+    const data = await api('GET', '/api/loop-borrow/tasks');
+    const busy = (data.tasks || []).some(t => t.status === 'running' || t.status === 'pending');
+    if (!busy) { clearInterval(_pollTimer); _pollTimer = null; }
+  }, 2000);
+}
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+async function init() {
+  await loadExchanges();
+  if (S.exchange) refreshBalances();
+}
+init();
+</script>
+</body>
+</html>
