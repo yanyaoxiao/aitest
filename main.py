@@ -1,82 +1,81 @@
 """
-多交易所辅助工具 — FastAPI backend
-Supports: Binance, OKX, Bybit, Gate.io, KuCoin
-Features: 下单, 提币, 借币, 循环借币
+多交易所辅助工具 — FastAPI backend (stateless / multi-user)
+
+Credentials are supplied by the client on every request body.
+No server-side key storage — safe for shared / Railway deployments.
 """
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import ccxt
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# ── Supported exchanges ───────────────────────────────────────────────────────
 
-CONFIG_FILE = "config.json"
 SUPPORTED = ["binance", "okx", "bybit", "gate", "kucoin"]
-
-
-def load_config() -> dict:
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    return {"exchanges": {}}
-
-
-def save_config(config: dict) -> None:
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
-
 
 # ── Exchange factory ──────────────────────────────────────────────────────────
 
-def make_exchange(eid: str) -> ccxt.Exchange:
-    config = load_config()
-    creds = config.get("exchanges", {}).get(eid)
-    if not creds:
-        raise HTTPException(404, f"交易所 '{eid}' 未配置，请先在设置中添加 API Key")
-    cls = getattr(ccxt, eid, None)
+def make_exchange(exchange: str, api_key: str, secret: str, password: str = "") -> ccxt.Exchange:
+    cls = getattr(ccxt, exchange, None)
     if cls is None:
-        raise HTTPException(400, f"不支持的交易所: {eid}")
+        raise HTTPException(400, f"不支持的交易所: {exchange}")
     return cls(
         {
-            "apiKey": creds.get("api_key", ""),
-            "secret": creds.get("secret", ""),
-            "password": creds.get("password", ""),  # OKX / KuCoin passphrase
+            "apiKey": api_key,
+            "secret": secret,
+            "password": password,
             "enableRateLimit": True,
             "options": {"defaultType": "spot"},
         }
     )
 
 
-# ── Pydantic models ───────────────────────────────────────────────────────────
+# ── Base auth model (embedded in every request that needs exchange access) ────
 
-class ExchangeCreds(BaseModel):
+class Auth(BaseModel):
+    exchange: str
     api_key: str
     secret: str
     password: str = ""
 
 
-class OrderReq(BaseModel):
-    exchange: str
-    symbol: str          # e.g. "BTC/USDT"
-    type: str            # "market" | "limit"
-    side: str            # "buy" | "sell"
+def ex(auth: Auth) -> ccxt.Exchange:
+    return make_exchange(auth.exchange, auth.api_key, auth.secret, auth.password)
+
+
+# ── Request models ────────────────────────────────────────────────────────────
+
+class BalanceReq(Auth):
+    type: str = "spot"
+
+
+class OrderReq(Auth):
+    symbol: str
+    type: str           # "market" | "limit"
+    side: str           # "buy" | "sell"
     amount: float
     price: Optional[float] = None
     params: Dict[str, Any] = {}
 
 
-class WithdrawReq(BaseModel):
-    exchange: str
+class OrdersListReq(Auth):
+    symbol: Optional[str] = None
+
+
+class CancelReq(Auth):
+    order_id: str
+    symbol: str
+
+
+class WithdrawReq(Auth):
     coin: str
     amount: float
     address: str
@@ -84,47 +83,43 @@ class WithdrawReq(BaseModel):
     network: Optional[str] = None
 
 
-class BorrowReq(BaseModel):
-    exchange: str
+class TransferReq(Auth):
+    coin: str
+    amount: float
+    from_account: str
+    to_account: str
+
+
+class BorrowReq(Auth):
     coin: str
     amount: float
     mode: str = "cross"          # "cross" | "isolated"
-    symbol: Optional[str] = None # required for isolated
+    symbol: Optional[str] = None  # required for isolated
 
 
-class RepayReq(BaseModel):
-    exchange: str
+class RepayReq(Auth):
     coin: str
     amount: float
     mode: str = "cross"
     symbol: Optional[str] = None
 
 
-class TransferReq(BaseModel):
-    exchange: str
-    coin: str
-    amount: float
-    from_account: str   # "spot" | "margin" | "futures" | "funding"
-    to_account: str
-
-
-class LoopReq(BaseModel):
-    exchange: str
+class LoopReq(Auth):
     collateral: str       # coin already held as collateral, e.g. "USDT"
-    borrow_coin: str      # coin to borrow, e.g. "USDT" or "BTC"
-    initial: float        # base collateral amount to derive borrow sizes from
-    ratio: float = 0.8    # fraction of previous amount to borrow each loop
-    loops: int = 5        # number of iterations
+    borrow_coin: str      # coin to borrow, e.g. "USDT"
+    initial: float        # base amount to derive geometric series from
+    ratio: float = 0.8    # fraction to borrow each round
+    loops: int = 5
     mode: str = "cross"
     symbol: Optional[str] = None
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
-app = FastAPI(title="多交易所辅助工具", version="1.0.0")
+app = FastAPI(title="多交易所辅助工具", version="2.0.0")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-TASKS: Dict[str, dict] = {}  # in-memory task store
+TASKS: Dict[str, dict] = {}   # in-memory; reset on restart (intentional)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -133,63 +128,41 @@ async def root() -> str:
         return f.read()
 
 
-# ── Exchange management ───────────────────────────────────────────────────────
+# ── Exchange list (no auth required) ─────────────────────────────────────────
 
 @app.get("/api/exchanges")
 async def list_exchanges():
-    config = load_config()
-    return {
-        "supported": SUPPORTED,
-        "configured": list(config.get("exchanges", {}).keys()),
-    }
-
-
-@app.post("/api/exchanges/{eid}")
-async def save_exchange(eid: str, creds: ExchangeCreds):
-    if eid not in SUPPORTED:
-        raise HTTPException(400, f"不支持的交易所: {eid}")
-    config = load_config()
-    config.setdefault("exchanges", {})[eid] = creds.model_dump()
-    save_config(config)
-    return {"ok": True}
-
-
-@app.delete("/api/exchanges/{eid}")
-async def del_exchange(eid: str):
-    config = load_config()
-    config.get("exchanges", {}).pop(eid, None)
-    save_config(config)
-    return {"ok": True}
+    return {"supported": SUPPORTED}
 
 
 # ── Balances ──────────────────────────────────────────────────────────────────
 
-@app.get("/api/balances/{eid}")
-async def get_balances(eid: str, type: str = "spot"):
-    ex = make_exchange(eid)
+@app.post("/api/balances")
+async def get_balances(req: BalanceReq):
+    exchange = ex(req)
     try:
         params: dict = {}
-        if type == "margin":
-            if eid == "binance":
+        if req.type == "margin":
+            if req.exchange == "binance":
                 params = {"type": "margin"}
-            elif eid == "okx":
+            elif req.exchange == "okx":
                 params = {"type": "trading"}
-            elif eid == "bybit":
+            elif req.exchange == "bybit":
                 params = {"accountType": "UNIFIED"}
-        bal = ex.fetch_balance(params)
+        bal = exchange.fetch_balance(params)
         nonzero = {k: v for k, v in bal["total"].items() if v and float(v) > 0}
-        return {"exchange": eid, "type": type, "balances": nonzero}
+        return {"exchange": req.exchange, "type": req.type, "balances": nonzero}
     except Exception as e:
         raise HTTPException(400, str(e))
 
 
 # ── Orders ────────────────────────────────────────────────────────────────────
 
-@app.post("/api/orders")
+@app.post("/api/orders/create")
 async def create_order(req: OrderReq):
-    ex = make_exchange(req.exchange)
+    exchange = ex(req)
     try:
-        result = ex.create_order(
+        result = exchange.create_order(
             req.symbol, req.type, req.side, req.amount, req.price, req.params
         )
         return {"ok": True, "order": result}
@@ -197,20 +170,20 @@ async def create_order(req: OrderReq):
         raise HTTPException(400, str(e))
 
 
-@app.get("/api/orders/{eid}")
-async def open_orders(eid: str, symbol: Optional[str] = None):
-    ex = make_exchange(eid)
+@app.post("/api/orders/list")
+async def list_orders(req: OrdersListReq):
+    exchange = ex(req)
     try:
-        return {"orders": ex.fetch_open_orders(symbol)}
+        return {"orders": exchange.fetch_open_orders(req.symbol)}
     except Exception as e:
         raise HTTPException(400, str(e))
 
 
-@app.delete("/api/orders/{eid}/{order_id}")
-async def cancel_order(eid: str, order_id: str, symbol: str = Query(...)):
-    ex = make_exchange(eid)
+@app.post("/api/orders/cancel")
+async def cancel_order(req: CancelReq):
+    exchange = ex(req)
     try:
-        return {"ok": True, "result": ex.cancel_order(order_id, symbol)}
+        return {"ok": True, "result": exchange.cancel_order(req.order_id, req.symbol)}
     except Exception as e:
         raise HTTPException(400, str(e))
 
@@ -219,93 +192,80 @@ async def cancel_order(eid: str, order_id: str, symbol: str = Query(...)):
 
 @app.post("/api/withdraw")
 async def withdraw(req: WithdrawReq):
-    ex = make_exchange(req.exchange)
+    exchange = ex(req)
     try:
         params = {}
         if req.network:
             params["network"] = req.network
-        result = ex.withdraw(req.coin, req.amount, req.address, req.tag, params)
+        result = exchange.withdraw(req.coin, req.amount, req.address, req.tag, params)
         return {"ok": True, "result": result}
     except Exception as e:
         raise HTTPException(400, str(e))
 
 
-# ── Transfer between accounts ─────────────────────────────────────────────────
+# ── Transfer ──────────────────────────────────────────────────────────────────
 
 @app.post("/api/transfer")
 async def transfer(req: TransferReq):
-    ex = make_exchange(req.exchange)
+    exchange = ex(req)
     try:
-        result = ex.transfer(req.coin, req.amount, req.from_account, req.to_account)
+        result = exchange.transfer(req.coin, req.amount, req.from_account, req.to_account)
         return {"ok": True, "result": result}
     except Exception as e:
         raise HTTPException(400, str(e))
 
 
-# ── Margin borrow / repay helpers ─────────────────────────────────────────────
+# ── Borrow / Repay helpers ────────────────────────────────────────────────────
 
 def _do_borrow(
-    ex: ccxt.Exchange, coin: str, amount: float, mode: str, symbol: Optional[str]
+    exchange: ccxt.Exchange, coin: str, amount: float, mode: str, symbol: Optional[str]
 ) -> dict:
-    # Try ccxt unified method first
     try:
-        if mode == "cross":
-            return ex.borrow_margin(coin, amount, None, {})
-        else:
-            return ex.borrow_margin(coin, amount, symbol, {})
+        return exchange.borrow_margin(coin, amount, symbol if mode == "isolated" else None, {})
     except (AttributeError, ccxt.NotSupported):
         pass
-
-    eid = ex.id
+    eid = exchange.id
     if eid == "binance":
         p: dict = {"asset": coin, "amount": amount}
         if mode == "isolated" and symbol:
             p.update({"isIsolated": "TRUE", "symbol": symbol.replace("/", "")})
-        return ex.sapi_post_margin_loan(p)
+        return exchange.sapi_post_margin_loan(p)
     if eid == "okx":
-        return ex.private_post_account_borrow_repay(
+        return exchange.private_post_account_borrow_repay(
             {"ccy": coin, "side": "borrow", "amt": str(amount)}
         )
     if eid == "bybit":
-        return ex.private_post_v5_account_borrow(
-            {"currency": coin, "qty": str(amount)}
-        )
+        return exchange.private_post_v5_account_borrow({"currency": coin, "qty": str(amount)})
     raise HTTPException(400, f"{eid} 暂不支持借币操作")
 
 
 def _do_repay(
-    ex: ccxt.Exchange, coin: str, amount: float, mode: str, symbol: Optional[str]
+    exchange: ccxt.Exchange, coin: str, amount: float, mode: str, symbol: Optional[str]
 ) -> dict:
     try:
-        if mode == "cross":
-            return ex.repay_margin(coin, amount, None, {})
-        else:
-            return ex.repay_margin(coin, amount, symbol, {})
+        return exchange.repay_margin(coin, amount, symbol if mode == "isolated" else None, {})
     except (AttributeError, ccxt.NotSupported):
         pass
-
-    eid = ex.id
+    eid = exchange.id
     if eid == "binance":
         p: dict = {"asset": coin, "amount": amount}
         if mode == "isolated" and symbol:
             p.update({"isIsolated": "TRUE", "symbol": symbol.replace("/", "")})
-        return ex.sapi_post_margin_repay(p)
+        return exchange.sapi_post_margin_repay(p)
     if eid == "okx":
-        return ex.private_post_account_borrow_repay(
+        return exchange.private_post_account_borrow_repay(
             {"ccy": coin, "side": "repay", "amt": str(amount)}
         )
     if eid == "bybit":
-        return ex.private_post_v5_account_repay(
-            {"currency": coin, "qty": str(amount)}
-        )
+        return exchange.private_post_v5_account_repay({"currency": coin, "qty": str(amount)})
     raise HTTPException(400, f"{eid} 暂不支持还款操作")
 
 
 @app.post("/api/borrow")
 async def borrow(req: BorrowReq):
-    ex = make_exchange(req.exchange)
+    exchange = ex(req)
     try:
-        result = _do_borrow(ex, req.coin, req.amount, req.mode, req.symbol)
+        result = _do_borrow(exchange, req.coin, req.amount, req.mode, req.symbol)
         return {"ok": True, "result": result}
     except HTTPException:
         raise
@@ -315,9 +275,9 @@ async def borrow(req: BorrowReq):
 
 @app.post("/api/repay")
 async def repay(req: RepayReq):
-    ex = make_exchange(req.exchange)
+    exchange = ex(req)
     try:
-        result = _do_repay(ex, req.coin, req.amount, req.mode, req.symbol)
+        result = _do_repay(exchange, req.coin, req.amount, req.mode, req.symbol)
         return {"ok": True, "result": result}
     except HTTPException:
         raise
@@ -329,10 +289,10 @@ async def repay(req: RepayReq):
 
 async def _run_loop(task_id: str, req: LoopReq) -> None:
     """
-    Executes N rounds of margin borrowing in a geometric series.
-
-    Round i borrows: initial × ratio^i
-    Total ≈ initial × ratio × (1 − ratio^loops) / (1 − ratio)
+    Geometric-series loop borrow:
+      Round i borrows: initial × ratio^i
+      Total ≈ initial × ratio × (1 − ratio^N) / (1 − ratio)
+    Credentials live only in `req` (in-memory, never persisted).
     """
     task = TASKS[task_id]
     task["status"] = "running"
@@ -342,7 +302,7 @@ async def _run_loop(task_id: str, req: LoopReq) -> None:
         log.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
     try:
-        ex = make_exchange(req.exchange)
+        exchange = ex(req)
         total = 0.0
         amount = req.initial
 
@@ -353,13 +313,12 @@ async def _run_loop(task_id: str, req: LoopReq) -> None:
 
             borrow_amt = round(amount * req.ratio, 8)
             entry(f"第 {i + 1}/{req.loops} 轮：借入 {borrow_amt} {req.borrow_coin}")
-
-            _do_borrow(ex, req.borrow_coin, borrow_amt, req.mode, req.symbol)
+            _do_borrow(exchange, req.borrow_coin, borrow_amt, req.mode, req.symbol)
             total += borrow_amt
             entry(f"借入成功，累计借入：{round(total, 8)} {req.borrow_coin}")
 
-            amount = borrow_amt          # next round borrows ratio% of this amount
-            await asyncio.sleep(0.6)    # gentle rate-limit courtesy pause
+            amount = borrow_amt
+            await asyncio.sleep(0.6)
 
         task["status"] = "done"
         task["total"] = round(total, 8)
@@ -374,10 +333,19 @@ async def _run_loop(task_id: str, req: LoopReq) -> None:
 @app.post("/api/loop-borrow/start")
 async def loop_start(req: LoopReq, bg: BackgroundTasks):
     tid = uuid.uuid4().hex[:8]
+    # Store only sanitized metadata — credentials are NEVER persisted
     TASKS[tid] = {
         "id": tid,
         "status": "pending",
-        "request": req.model_dump(),
+        "request": {
+            "exchange": req.exchange,
+            "collateral": req.collateral,
+            "borrow_coin": req.borrow_coin,
+            "initial": req.initial,
+            "ratio": req.ratio,
+            "loops": req.loops,
+            "mode": req.mode,
+        },
         "log": [],
         "created": datetime.now().isoformat(),
         "total": None,
@@ -385,11 +353,6 @@ async def loop_start(req: LoopReq, bg: BackgroundTasks):
     }
     bg.add_task(_run_loop, tid, req)
     return {"ok": True, "task_id": tid}
-
-
-@app.get("/api/loop-borrow/tasks")
-async def loop_tasks():
-    return {"tasks": list(TASKS.values())}
 
 
 @app.get("/api/loop-borrow/tasks/{tid}")

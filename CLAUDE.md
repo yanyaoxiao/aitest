@@ -70,23 +70,33 @@ Open [http://localhost:8000](http://localhost:8000) in a browser.
 
 ---
 
+## Credential Storage (Multi-User Architecture)
+
+**API keys are stored in each user's browser `localStorage` — never on the server.**
+
+Every request that requires exchange access includes `{exchange, api_key, secret, password}`
+in the POST body. The server is completely stateless with respect to credentials, making it
+safe to deploy on shared infrastructure (e.g. Railway).
+
+Loop-borrow tasks are stored in-memory on the server (reset on restart). Each browser tracks
+its own task IDs in `localStorage` and polls only those tasks.
+
 ## API Endpoints
+
+All credential-bearing endpoints use **POST** so keys never appear in URLs or server logs.
 
 | Method | Path                                  | Description           |
 |--------|---------------------------------------|-----------------------|
-| GET    | `/api/exchanges`                      | List supported/configured exchanges |
-| POST   | `/api/exchanges/{eid}`                | Save/update API credentials |
-| DELETE | `/api/exchanges/{eid}`                | Remove exchange config |
-| GET    | `/api/balances/{eid}?type=spot`       | Fetch account balances |
-| POST   | `/api/orders`                         | Place an order        |
-| GET    | `/api/orders/{eid}?symbol=BTC/USDT`   | List open orders      |
-| DELETE | `/api/orders/{eid}/{id}?symbol=…`     | Cancel an order       |
+| GET    | `/api/exchanges`                      | List supported exchanges (no auth) |
+| POST   | `/api/balances`                       | Fetch balances `{exchange,api_key,secret,password,type}` |
+| POST   | `/api/orders/create`                  | Place an order        |
+| POST   | `/api/orders/list`                    | List open orders      |
+| POST   | `/api/orders/cancel`                  | Cancel an order       |
 | POST   | `/api/withdraw`                       | Withdraw coins        |
 | POST   | `/api/transfer`                       | Transfer between accounts |
 | POST   | `/api/borrow`                         | Borrow margin         |
 | POST   | `/api/repay`                          | Repay margin loan     |
 | POST   | `/api/loop-borrow/start`              | Start loop borrow task |
-| GET    | `/api/loop-borrow/tasks`              | List all tasks        |
 | GET    | `/api/loop-borrow/tasks/{tid}`        | Get task detail + log |
 | POST   | `/api/loop-borrow/tasks/{tid}/stop`   | Signal task to stop   |
 
@@ -131,10 +141,12 @@ Single-file SPA. JavaScript is embedded at the bottom. Key sections:
 
 ## Security Notes
 
-- **API keys** are stored in `config.json` on disk, which is gitignored
-- This tool is designed to run **locally** — do not expose it to the public internet without authentication
+- **API keys** are stored in each user's **browser `localStorage`** — never sent to or stored on the server
+- The server is stateless: credentials travel in the POST body of each request and are not logged or persisted
+- Suitable for shared/Railway deployments; each user manages their own keys in their browser
 - All financial operations require a browser `confirm()` dialog before execution
 - Withdrawal confirmation shows the full address; double-check before confirming
+- `config.json` is no longer used and can be deleted if present
 
 ---
 
